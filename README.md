@@ -6,8 +6,6 @@ Code and analyses associated with profiling the open chromatin landscape of B-AL
     - bedtools v2.26.0
     - samtools 1.5
     - deeptools 3.1.2
-    - STAR_2.6.1a 
-    - WALT v1.0 
     - bowtie2 version 2.2.6 
     - FastQC v0.11.4
     - cutadapt 1.8.3 
@@ -15,7 +13,6 @@ Code and analyses associated with profiling the open chromatin landscape of B-AL
     - DeSeq2 1.18.1 (R version 3.4.3)
     - ChIPeeker 1.14.2 (R version 3.4.3)
     - clusterProfiler 3.6.0 (R version 3.4.3)
-    - bagfoot 0.9.6 (R version 3.4.3)
 
 ## General Processing Scripts
 
