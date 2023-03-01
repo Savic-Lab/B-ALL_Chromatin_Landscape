@@ -1,0 +1,63 @@
+#BSUB -P savicgrp
+#BSUB -oo Arima_capHiC_3kb2%J_%I.out
+#BSUB -eo Arima_capHiC_3kb2%J_%I.err
+#BSUB -n 8
+#BSUB -q standard
+#BSUB -R "span[hosts=1] rusage[mem=8000]"
+#BSUB -J "Arima_capHiC_3kb2[1-4]"
+
+
+# paste <(ls -1 *_R1.merged.fastq.gz) <(ls -1 *_R2.merged.fastq.gz) > fastq_list.tsv
+# paste <(ls -1 *R1_001.fastq.gz) <(ls -1 *R2_001.fastq.gz) <(ls -1 *R1_001.fastq.gz | cut -d _ -f 1,2,3) > fastq_list.tsv
+
+module load conda3/5.1.0
+module load bedtools/2.25.0
+module load deeptools/3.5.0
+source activate captureHiC_arima
+
+id=$LSB_JOBINDEX
+
+FASTQ_TSV=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/3d/savicgrp_281657_HiC-1/fastq_list.tsv
+FASTQ_DIR=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/3d/savicgrp_281657_HiC-1
+BOWTIE_PATH=/home/kbarnett/anaconda3/envs/captureHiC_arima/bin/bowtie2
+CHIC_PATH=/home/kbarnett/anaconda3/envs/captureHiC_arima/bin/
+HICUP_PATH=/home/kbarnett/anaconda3/envs/captureHiC_arima/bin/
+GENOME=/datasets/public/igenomes/hg19/Homo_sapiens/UCSC/hg19/Sequence/Bowtie2Index/genome
+DIGEST=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/arima_capHiC/CaptureHiC/Digest_hg19_Arima.txt
+BED=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/arima_capHiC/CaptureHiC/3kb/human_GW_PC_S3207364_S3207414_hg19.uniq.bed
+RMAP=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/arima_capHiC/CaptureHiC/3kb/hg19_chicago_input_3kb.rmap
+BAITMAP=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/arima_capHiC/CaptureHiC/3kb/hg19_chicago_input_3kb.baitmap
+DESIGN_DIR=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/arima_capHiC/CaptureHiC/3kb
+RES=3kb
+ORG=hg19
+NCORE=8
+
+FASTQ1=`head -n $id ${FASTQ_TSV}|tail -n1|awk '{print $1}'`
+FASTQ2=`head -n $id ${FASTQ_TSV}|tail -n1|awk '{print $2}'`
+NAME=`head -n $id ${FASTQ_TSV}|tail -n1|awk '{print $3}'`
+#NAME=`basename $FASTQ1 _R1.merged.fastq.gz`
+OUT_DIR=/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/3d/savicgrp_281657_HiC-1/${NAME}
+
+# Check if directories exist, if not, create them
+if test -d ${OUT_DIR}; then  echo "output directory exists"; else mkdir ${OUT_DIR} && echo created; fi
+
+cd ${FASTQ_DIR}
+
+bash /research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/arima_capHiC/CHiC/Arima-CHiC-v1.4.sh \
+	-W 1 -Y 1 -Z 1 -P 1 \
+	-A ${BOWTIE_PATH} \
+	-X ${GENOME} \
+	-H ${HICUP_PATH} \
+	-C ${CHIC_PATH} \
+	-d ${DIGEST} \
+	-H ${HICUP_PATH} \
+	-I ${FASTQ1},${FASTQ2} \
+	-o ${OUT_DIR} \
+	-p ${NAME} \
+	-b ${BED} \
+	-R ${RMAP} \
+	-B ${BAITMAP} \
+	-D ${DESIGN_DIR} \
+	-O ${ORG} \
+	-r ${RES} \
+	-t ${NCORE}
