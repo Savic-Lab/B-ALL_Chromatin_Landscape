@@ -1,0 +1,79 @@
+##### Intersect peak summits from subtype merged bams with concatenated list of all narrowPeaks detected from those subtype patients
+
+#BSUB -P savicgrp
+#BSUB -oo summit_filter%J_%I.out 
+#BSUB -eo summit_filter%J_%I.err
+#BSUB -n 2
+#BSUB -q standard
+#BSUB -R "span[hosts=1] rusage[mem=4000]"
+#BSUB -J "summit_filter[1-16]"
+
+module load bedtools/2.30.0
+
+# paste <(ls -1 *summits.bed) <(ls -1 *_concat_allPeaks.narrowPeak) > summits_filter.tsv
+
+
+BLACKLIST=/research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed
+
+FILE_LIST=/research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams/summits_filter.tsv
+BASE_DIR=/research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams
+
+# Parse tsv file to feed into array
+id=$LSB_JOBINDEX
+SUMMIT1=`head -n $id ${FILE_LIST}|tail -n1|awk '{print $1}'`
+CONCAT2=`head -n $id ${FILE_LIST}|tail -n1|awk '{print $2}'`
+FILE=`basename $SUMMIT1 _MergedBam_summits.bed`
+
+cd ${BASE_DIR}
+
+bedtools intersect -c -a ${SUMMIT1} -b ${CONCAT2} > ${FILE}_reproducible_count_summits.bed
+
+
+##### Filter out summits by reproducibility
+
+cat ETV6RUNX1_reproducible_count_summits.bed | awk '{ if ($6 >= 6) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > ETV6RUNX1_summit_interval_filtered.bed
+cat Hyper_reproducible_count_summits.bed | awk '{ if ($6 >= 5) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > Hyper_summit_interval_filtered.bed
+cat BCRABL1_reproducible_count_summits.bed | awk '{ if ($6 >= 5) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > BCRABL1_summit_interval_filtered.bed
+cat KMT2A_reproducible_count_summits.bed | awk '{ if ($6 >= 4) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > KMT2A_summit_interval_filtered.bed
+cat DUX4_reproducible_count_summits.bed | awk '{ if ($6 >= 2) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > DUX4_summit_interval_filtered.bed
+cat BOther_reproducible_count_summits.bed | awk '{ if ($6 >= 2) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > BOther_summit_interval_filtered.bed
+cat TCF3PBX1_reproducible_count_summits.bed | awk '{ if ($6 >= 2) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > TCF3PBX1_summit_interval_filtered.bed
+cat PAX5_reproducible_count_summits.bed | awk '{ if ($6 >= 1) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > PAX5_summit_interval_filtered.bed
+cat Hypo_reproducible_count_summits.bed | awk '{ if ($6 >= 1) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > Hypo_summit_interval_filtered.bed
+cat ZNF384_reproducible_count_summits.bed | awk '{ if ($6 >= 1) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > ZNF384_summit_interval_filtered.bed
+cat iAMP21_reproducible_count_summits.bed | awk '{ if ($6 >= 1) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > iAMP21_summit_interval_filtered.bed
+cat IKZF1_reproducible_count_summits.bed | awk '{ if ($6 >= 1) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > IKZF1_summit_interval_filtered.bed
+cat PhLike_reproducible_count_summits.bed | awk '{ if ($6 >= 5) { print } }' | bedtools slop -b 150 -i - -g /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome | bedtools intersect -v -a - -b /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/TOBIAS/hg19-blacklist.v2.bed | bedtools merge -i - -c 1 -o count > PhLike_summit_interval_filtered.bed
+
+
+##### Prepare final regions of interest for ATAC-seq analysis
+
+ls -1 /research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams/*_summit_interval_filtered.bed | grep -E 'BCRABL1||BOther|DUX4|ETV6RUNX1|Hyper|Hypo|iAMP21|IKZF1|KMT2A|PAX5|PhLike|TCF3PBX1|ZNF384' | xargs cat | bedtools sort -i - | bedtools merge -i - -c 1 -o count > BALL_BNorm_PhGrouped_Merged_summit_interval_filtered.bed
+
+
+##### Prepare region sets for subread 
+
+awk -v OFS="\t" 'BEGIN {print "GeneID","Chr","Start","End","Strand"} { print "Peak_"NR,$1,$2,$3,"-"}' BALL_BNorm_PhGrouped_Merged_summit_interval_filtered.bed > BALL_BNorm_PhGrouped_Merged_summit_interval_filtered.saf
+
+##### Generate ATAC counts matrix
+
+#BSUB -P savicgrp
+#BSUB -J Subread_B_HiCon
+#BSUB -oo Subread_B_HiCon.out 
+#BSUB -eo Subread_B_HiCon.err
+#BSUB -R "span[hosts=1]"
+#BSUB -n 32
+#BSUB -R "rusage[mem=2000]"
+#BSUB -B 
+#BSUB -N
+
+
+# Setup correct environment for script
+module load subread/1.5.1
+
+# Set working Directory
+cd /research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams
+ 
+featureCounts -p -F SAF -T 32 -O -a /research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/regions/BALL_BNorm_Merged_summit_interval_filtered.saf \
+	-o /research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/counts/BALL_BNorm_Merged_summit_interval_filtered_counts.txt \
+

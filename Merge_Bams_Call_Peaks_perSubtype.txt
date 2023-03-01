@@ -1,0 +1,28 @@
+#BSUB -P savicgrp
+#BSUB -oo BamMerge%J_%I.out 
+#BSUB -eo BamMerge%J_%I.err
+#BSUB -n 8
+#BSUB -q standard
+#BSUB -R "span[hosts=1] rusage[mem=4000]"
+#BSUB -J "BamMerge[1-16]"
+
+
+id=$LSB_JOBINDEX
+FILE_LIST=/research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/bamgroups_list.tsv
+BAMLIST_DIR=/research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams
+FILE=`head -n $id ${FILE_LIST}|tail -n1|awk '{print $1}'`
+OUT_DIR=/research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams
+NAME=`basename $FILE .tsv`
+CORES=8
+
+module load samtools/1.9
+
+# Merge bam files for each subtype according to subtype file lists
+samtools merge -@ $CORES ${OUT_DIR}/${NAME}_merged.bam -b ${BAMLIST_DIR}/${FILE}
+samtools index ${OUT_DIR}/${NAME}_merged.bam
+
+# Call peaks on merged bams 
+
+module load macs2/2.1.1
+
+macs2 callpeak -t ${OUT_DIR}/${NAME}_merged.bam -f BAMPE --call-summits -g hs --SPMR -B --trackline -n ${NAME}_MergedBam --outdir ${OUT_DIR}
