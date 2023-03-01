@@ -3,39 +3,29 @@ Code and analyses associated with profiling the open chromatin landscape of B-AL
 
 ## Software 
 
-    - bedtools v2.26.0
-    - samtools 1.5
-    - deeptools 3.1.2
-    - bowtie2 version 2.2.6 
-    - FastQC v0.11.4
-    - cutadapt 1.8.3 
-    - trim_galore 0.4.0 
-    - DeSeq2 1.18.1 (R version 3.4.3)
-    - ChIPeeker 1.14.2 (R version 3.4.3)
-    - clusterProfiler 3.6.0 (R version 3.4.3)
-
-## General Processing Scripts
-
-###### Trimming
-   
-###### Mapping 
-    
-###### Peak calling
+    - bedtools v2.30.0
+    - macs2 v2.1.1
+    - picard v1.141
+    - samtools v1.2
+    - deeptools v3.1.2
+    - bowtie2 v2.2.9
+    - FastQC v0.11.9
+    - cutadapt v1.18
+    - trim_galore v0.6.6
+    - tobias v0.12.11
+    - deeptools v3.5.0
+    - R packages - R_SesssionInfo.txt
     
     
-## Figure 1
-###### ATAC-seq Processing
-    - 
+###### ATAC-seq Processing and Regions of Interest Filtering
+    - ATAC_Processing.txt
+    - RegionsOfInterest_Selection_BALL_ATAC.txt
+    - Merge_Bams_Call_Peaks_perSubtype.txt
 ###### Promoter Capture Hi-C Processing
-    - 
-## Figure 2
-###### B-cell progenitor differential ATAC-seq analysis
-    - 
-###### K-Nearest Neighbor Classification Model
-    - 
+    - Promoter_CaptureHiC_Arima_BasicProcessing.txt
+###### TOBIAS Footprinting
+    - TOBIAS_Footprinting.Rmd
 
-## Figure 3
-###### B-ALL versus Pro-B Cell Differential ATAC-seq analysis
-    - 
-###### GREAT Ontology Analysis
-###### TOBIAS Differential TF Footprinting - B-ALL versus Pro-B Cells
+
+
+
