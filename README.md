@@ -26,6 +26,12 @@ Code and analyses associated with profiling the open chromatin landscape of B-AL
 ###### TOBIAS Footprinting
     - TOBIAS_Footprinting.Rmd
 
-
+###### Figure 1
+###### Figure 2
+###### Figure 3
+###### Figure 4
+###### Figure 5
+###### Figure 6
+###### Figure 7
 
 
