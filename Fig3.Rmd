@@ -1,0 +1,95 @@
+---
+title: "BALL versus Normal Analyses"
+author: "Kelly Barnett"
+date: "2023-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+.libPaths("/home/kbarnett/R_4.1")
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(DESeq2)
+library(pheatmap)
+library(BiocParallel)
+library(viridis)
+library(e1071)
+
+set.seed(242)
+```
+
+
+```{r DESeq Analysis}
+
+dds_BProg_BALL <- DESeq(dds_BProg_BALL, test="Wald", parallel = TRUE, BPPARAM=MulticoreParam(12))
+
+
+# ProB vs BALL
+
+ProB_vs_BALL_results <- results(dds_BProg_BALL, name = "Group_ProB_vs_BALL", tidy = TRUE, altHypothesis = "greaterAbs") %>% filter(padj < 0.05, abs(log2FoldChange) >= 1)
+
+
+# LFC Histogram
+results(dds_BProg_BALL, name = "Group_ProB_vs_BALL", tidy = TRUE, altHypothesis = "greaterAbs") %>% 
+  filter(padj < 0.05) %>% 
+  ggplot(aes(log2FoldChange)) +
+  geom_histogram(bins = 100, fill = "steelblue", color = "gray70") +
+  xlim(-10,10) +
+  xlab("Chromatin Accessibility Log2(Fold Change)") +
+  ylab("Genomic Regions") +
+  geom_vline(xintercept = -1) +
+  geom_vline(xintercept = 1) +
+  theme_bw(base_size = 16)
+
+# Top differential regions for visualization
+ProB_vs_BALL_results %>% 
+  filter(str_detect(row, pattern = "chrX|chrY", negate = TRUE)) %>% 
+  arrange(desc(abs(log2FoldChange))) %>% 
+  slice_max(order_by = abs(log2FoldChange), n = 200) %>% 
+  sample_n(10)
+
+ProB_vs_BALL_results_max200 <- ProB_vs_BALL_results %>% 
+  filter(str_detect(row, pattern = "chrX|chrY", negate = TRUE)) %>% 
+  slice_max(order_by = log2FoldChange, n = 200)
+
+ProB_vs_BALL_results_min200 <- ProB_vs_BALL_results %>% 
+  filter(str_detect(row, pattern = "chrX|chrY", negate = TRUE)) %>% 
+  slice_min(order_by = log2FoldChange, n = 200)
+
+bind_rows(ProB_vs_BALL_results_max200, ProB_vs_BALL_results_min200) %>% 
+  sample_n(size = 25) %>% 
+  separate(col = "row", into = c("chr", "start", "end")) %>% 
+  write_tsv(file = "/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/regions/BALL_vs_ProB_DiffAccessRegions_Top25UpDown.bed", col_names = FALSE)
+
+# Extend genomic regions for better visualization context
+#bedtools slop -g /research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Brennan/Analysis_Hi_ChIP/bwa_index/hg19.genome -i #BALL_vs_ProB_DiffAccessRegions_Top25UpDown.bed -b 4000 > BALL_vs_ProB_DiffAccessRegions_Top25UpDown_slop4000.bed
+
+
+
+ProB_vs_BALL_results_vst_prog_ALL_centered <- vst(dds_BALL_ProB_Class) %>% assay() %>% as_tibble(rownames = "Region") %>% filter(Region %in% ProB_vs_BALLProBClass_results$row) %>% 
+  rowwise() %>% mutate(rowMean = mean(c_across(contains("SRR")))) %>% ungroup() %>% 
+  mutate(across(contains(".bam"), ~ .x - rowMean)) %>% 
+  select(-rowMean) %>% 
+  column_to_rownames(var = "Region") %>% 
+  dplyr::select(starts_with("ProB"), starts_with("X"))
+
+
+# VST Counts for ProB vs BALL total samples
+ProB_vs_BALL_results_vst_prog_ALL <- vst(dds_BProg_BALL) %>% assay() %>% as_tibble(rownames = "Region") %>% filter(Region %in% ProB_vs_BALL_results$row) %>% 
+  column_to_rownames(var = "Region") %>% 
+  dplyr::select(starts_with("ProB"), starts_with("X"))
+
+
+
+# Annotation setup for heatmap
+colors2 <- c("#FE9B2DFF", "#7A0403FF")
+names(colors2) <- c("ProB", "BALL")
+ann_colors2 = list(Cell_Type = colors2)
+prog_BALL_anno_df2 <- data.frame("Cell_Type" = c(rep("ProB",3), rep("BALL",156)), row.names = colnames(ProB_vs_BALL_results_vst_prog_ALL))
+
+
+# Heatmap of centered values
+pheatmap(ProB_vs_BALL_results_vst_prog_ALL_centered %>% sample_frac(size = 1.0), color = plasma(11), cellwidth = 4, cellheight = NA, cluster_rows=T, cluster_cols=F, scale = "none", show_rownames = FALSE, show_colnames = FALSE, annotation_col = prog_BALL_anno_df2, annotation_colors = ann_colors2, fontsize = 16, gaps_col = c(3))
+
+
+```

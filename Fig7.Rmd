@@ -1,0 +1,373 @@
+---
+title: "ATAC-QTL Processing"
+author: "Kelly Barnett"
+date: "2023-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rasqualTools)
+library(data.table)
+```
+
+```{r Read in snp table to get set of samples with snp info}
+
+# Load sample info table 
+load("/Volumes/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/R_Data/Sample_info_master_qualityFilter.RData")
+
+# Read in portion of VCF file
+snp_sample <- read_tsv(file = "/Volumes/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/chr10.dose.vcf", col_names = TRUE, n_max = 5)
+
+# Extract numeric identifiers for samples
+vcf_sample_ids <- snp_sample %>% select(contains("SJ")) %>% colnames() %>% str_remove(pattern = "_G1") %>% str_remove(pattern = "SJ[BT]ALL")
+
+# Filter sample info table against vcf samples
+Sample_info_master_qualityFilter_wVCF <- Sample_info_master_qualityFilter %>% filter(str_detect(Compbio2, pattern = "SJ")) %>% 
+  mutate(VCF_Sample_Match = str_remove(Compbio2, pattern = "SJ[BT]?+ALL")) %>%
+  filter(VCF_Sample_Match %in% vcf_sample_ids)
+
+Sample_info_master_qualityFilter_wVCFnames <- tibble(vcf_name = snp_sample %>% select(contains("SJ")) %>% colnames(), VCF_Sample_Match = snp_sample %>% select(contains("SJ")) %>% colnames() %>% str_remove(pattern = "_G1") %>% str_remove(pattern = "SJ[BT]ALL")) %>%
+  left_join(Sample_info_master_qualityFilter_wVCF)
+
+identical(Sample_info_master_qualityFilter_wVCFnames %>% filter(!is.na(Sample)) %>% pull(vcf_name), snp_sample %>% select(contains("SJ")) %>% colnames())
+        
+          
+```
+
+```{r Prepare list of bam files and edit VCF files for running AS counts}
+
+# List of VCF files
+vcf_files <- list.files(path = "/Volumes/savicgrp/Kelly/Patient_VCFs/genotype/", pattern = "*.vcf$")
+
+
+# Samples with both VCF file and ATAC bam file
+VCF_samples_with_bams <- Sample_info_master_qualityFilter_wVCFnames %>% filter(!is.na(Sample)) %>% pull(vcf_name)
+
+# Function to remove unwanted samples from vcf files
+setwd("/Volumes/savicgrp/Kelly/Patient_VCFs/genotype/")
+
+edit_vcf <- function(file) {
+  fread(file = file, header = TRUE, skip = 19, nThread = 4, select = c("#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT", VCF_samples_with_bams)) %>% 
+    fwrite(file = paste0("/Volumes/savicgrp/Kelly/Patient_VCFs/edited_VCFs/",file), sep = "\t", col.names = TRUE, nThread = 4)
+}
+
+setwd("/Volumes/savicgrp/Kelly/Patient_VCFs/genotype/")
+
+walk(vcf_files, edit_vcf)
+
+# Write out list of bam files that match with VCF samples in the same order
+Sample_info_master_qualityFilter_wVCFnames %>% filter(!is.na(Sample)) %>% select(Sample2) %>%
+  mutate(Sample2 = paste0("/research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/",Sample2)) %>% 
+  write_tsv(file = "/Volumes/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/bam.list.txt", col_names = FALSE)
+
+Sample_info_master_qualityFilter_wVCFnames %>% filter(!is.na(Sample)) %>% select(vcf_name, VCF_Sample_Match, Compbio2, Sample2) %>%
+  mutate(Sample2 = paste0("/research/rgs01/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/",Sample2)) %>% pull(Compbio2)
+snp_sample %>% select(contains("SJ")) %>% colnames()
+```
+
+```{r Save ATAC read counts matrix in binary format}
+
+# Read in counts matrix 
+raw_counts <- read_tsv(file = "/Volumes/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/counts/BALL_BNorm_PhGrouped_Merged_summit_interval_filtered_counts.txt", skip = 1, col_names = TRUE)
+
+# Filter raw counts matrix for only samples that have VCF data
+# Rearrange to match sample order in VCF file
+
+VCF_Sample_order <- Sample_info_master_qualityFilter_wVCFnames %>% filter(!is.na(Sample)) %>% pull(Sample2)
+
+ATAC_matrix_RASQUAL <- raw_counts %>% 
+  unite(Chr, Start, End, col = "Region", sep = "_") %>% 
+  pivot_longer(cols = contains(".bam"), names_to = "Sample", values_to = "Counts") %>% 
+  filter(Sample %in% Sample_info_master_qualityFilter_wVCF$Sample2) %>% 
+  pivot_wider(names_from = "Sample", values_from = "Counts") %>% 
+  select(Region, contains(".bam")) %>% 
+  select(Region, VCF_Sample_order) %>% 
+  column_to_rownames(var = "Region")
+
+# Save binary files needed by RASQUAL
+saveRasqualMatrices(list(ALL_ATAC = ATAC_matrix_RASQUAL), "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL", file_suffix = "counts")
+
+"/Volumes/project_space/savicgrp/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL"
+```
+
+```{r Get size factors for ATAC samples and save binary files}
+
+# Use size factors from DESeq2
+load("/Volumes/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL/sizeFactors_dds_B_ALL.RData")
+
+# Invert size factors from DESeq2 
+# assumes rasqual uses them as a multiplier while DESeq2 uses them as a divisor
+# Lower section plots standard rasqual SF against read counts which indicates rasqual actually uses SF as a divisor
+
+#sizeFactors_dds_B_ALL_inverted <- sizeFactors_dds_B_ALL %>% as_tibble(rownames = "Sample") %>% 
+#  mutate(sizeFactor_inverted = `sizeFactors(dds_B_ALL)` ^ -1) %>% 
+#  select(Sample, sizeFactor_inverted) %>% 
+#  column_to_rownames(var = "Sample")
+
+# Reformat size factor table
+size_factors_deseq <- sizeFactors_dds_B_ALL %>% as_tibble(rownames = "Sample") %>% 
+  filter(str_detect(Sample, pattern = "_SRR", negate = TRUE)) %>% 
+  mutate(Sample = str_remove(Sample, pattern = "X")) %>% 
+  pivot_wider(names_from = "Sample", values_from = "sizeFactors(dds_B_ALL)") %>% 
+  dplyr::slice(rep(1,217240)) %>% 
+  bind_cols(ATAC_matrix_RASQUAL %>% as_tibble(rownames = "Region") %>% select(Region)) %>% 
+  select(Region, colnames(ATAC_matrix_RASQUAL)) %>% 
+  column_to_rownames(var = "Region")
+
+# Calculate size factors to correct for library size
+size_factors <- rasqualCalculateSampleOffsets(ATAC_matrix_RASQUAL, gc_correct = FALSE)
+
+# Save binary files needed by RASQUAL
+saveRasqualMatrices(list(ALL_ATAC = size_factors), "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL", file_suffix = "size_factors")
+saveRasqualMatrices(list(ALL_ATAC = size_factors_deseq), "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL", file_suffix = "size_factors_deseq")
+
+```
+
+```{r Calculate number of SNPs overlapping each gene or peak of interest}
+
+# Reformat peak regions of interest
+peaks <- raw_counts %>% select(1:2, Start, End) %>% 
+  rename("gene_id" = "Geneid", "chr" = "Chr", "start" = "Start", "end" = "End")
+
+
+# Read in VCF of BCell open chromatin SNPs that have had allele specific counts calcculated
+VCF_file_test <- fread(file = "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/split_vcfs/BCellOCR_liftTohg19_final.vcf", header = FALSE, sep = "\t") %>% 
+  select(1:3) %>% rename("chr" = "V1", "pos" = "V2", "snp_id" = "V3")
+
+# Count the number of feature SNPs and cis SNPs overlapping features of interest
+snp_overlaps_test  <- countSnpsOverlapingPeaks(peaks, VCF_file_test, cis_window = 1000)
+
+# Count how many regions have at least one SNP (feature or cis)
+countSnpsOverlapingPeaks(peaks, VCF_file_test, cis_window = 2000) %>% filter(feature_snp_count > 0 | cis_snp_count > 0) 
+
+```
+
+```{r Construct rasqual commands from meta data, standard scale factors}
+
+
+snp_overlaps_test %>% 
+  unite(col = "Region", c(chromosome_name, exon_starts, exon_ends), sep = "_", remove = FALSE) %>% 
+  mutate(command = paste0("tabix BCellOCR_liftTohg19_final.vcf.gz ",chromosome_name,":",range_start,"-",range_end," | rasqual ","-f ",Region," --n-threads 2"," -y /research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL/ALL_ATAC.counts.bin -k /research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL/ALL_ATAC.size_factors.bin -n 69",
+                          " -j ",str_remove(gene_id, pattern = "Peak_"), " -l ",cis_snp_count," -m ",feature_snp_count,
+                          " -s ",exon_starts," -e ",exon_ends," >> rasqual_outputs.tsv")) %>% 
+  select(command) %>% 
+  write_tsv(file = "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/rasqual_commands/command_list.txt", col_names = FALSE)
+```
+
+
+```{r Get genome wide correction using permuted q-vals}
+
+# Get vector of non-permuted q-values for lead SNPs
+# Lead SNPs select by lowest q-val and highest chi-sq
+q1 <- read_tsv(file = "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/rasqual_commands/rasqual_outputs.tsv",
+         col_names = c("Region", "rsID", "Chrom", "SNPpos", "Ref", "Alt", "AlleleFreq", "HWEChiSq", "ImputeQual", "Log10Qval", "ChiSq", "EffectSize", "Delta", "Phi", "Overdisp", "SNPIDregion", "fSNPs", "testSNPs",
+                       "Iter_null", "Iter_Alt", "RandTies", "LogLikNull", "Converge", "SqCorr_fSNP", "SqCorr_rSNP")) %>% group_by(Region) %>% filter(Log10Qval == min(Log10Qval)) %>% filter(ChiSq == max(ChiSq)) %>% filter(SNPpos == RandTies ) %>% mutate(QVal = 10^(Log10Qval)) %>% pull(QVal)
+
+q0 <- read_tsv(file = "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/rasqual_commands/rasqual_permute_outputs2.tsv",
+         col_names = c("Region", "rsID", "Chrom", "SNPpos", "Ref", "Alt", "AlleleFreq", "HWEChiSq", "ImputeQual", "Log10Qval", "ChiSq", "EffectSize", "Delta", "Phi", "Overdisp", "SNPIDregion", "fSNPs", "testSNPs",
+                       "Iter_null", "Iter_Alt", "RandTies", "LogLikNull", "Converge", "SqCorr_fSNP", "SqCorr_rSNP")) %>% group_by(Region) %>% filter(Log10Qval == min(Log10Qval)) %>% filter(ChiSq == max(ChiSq)) %>% filter(SNPpos == RandTies) %>% mutate(QVal = 10^(Log10Qval)) %>% pull(QVal)
+
+
+# q1 : real lead Q-value vector for all peaks from RASQUAL
+# q0 : permutated Q-value vector
+# alpha : FDR threshold
+# This function returns the P-value threshold corresponding to FDR=alpha.
+getFDR <-
+function(q1, q0, alpha=0.1, z=NULL, subset=NULL){
+	if(is.null(z)){
+		a=0
+		for(itr in 1:10){
+			a=getFDR(q1,q0,alpha,rev(a+0:100/100^itr),subset)
+		}
+		a
+	}else{
+		if(!is.null(subset)){
+			q1=q1[subset]
+			q0=q0[subset]
+		}
+		q1=q1[!is.na(q1)]
+		q0=q0[!is.na(q0)]
+		x=NULL;
+		for(i in z){
+			x=c(x,sum(q0<i)/length(q0)/(sum(q1<i)/length(q1)))
+		};
+		max(c(0,z[x<alpha]),na.rm=T)
+	}
+}
+# Example usage:
+FDR_thresh_log10 <- log10(getFDR(q1, q0, 0.10))
+flag_fdr10 <- q1 < getFDR(q1, q0, 0.10) # True = significant QTLs
+
+# Get list of FDR filtered and imputation quality filterd caQTLs
+NonPermute_Results_FDRFilter <- read_tsv(file = "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Patient_VCFs/edited_VCFs/rasqual_commands/rasqual_outputs.tsv",
+         col_names = c("Region", "rsID", "Chrom", "SNPpos", "Ref", "Alt", "AlleleFreq", "HWEChiSq", "ImputeQual", "Log10Qval", "ChiSq", "EffectSize", "Delta", "Phi", "Overdisp", "SNPIDregion", "fSNPs", "testSNPs",
+                       "Iter_null", "Iter_Alt", "RandTies", "LogLikNull", "Converge", "SqCorr_fSNP", "SqCorr_rSNP")) %>% group_by(Region) %>% filter(Log10Qval == min(Log10Qval)) %>% filter(ChiSq == max(ChiSq)) %>% filter(SNPpos == RandTies) %>% filter(Log10Qval < FDR_thresh_log10, ImputeQual > 0.80)
+  
+# Scatterplot of EffectSize versus -Log10Qval
+NonPermute_Results_FDRFilter %>% ggplot(aes(x = EffectSize, y = -Log10Qval)) + geom_point(alpha = 0.20)
+
+```
+
+
+```{r Analyze rasqual results with standard scale factors}
+
+# Filter full SNP list for q-value
+# Recalc effect size as delta from 0.50
+# Also removes any SNPs that are not truly single nucleotide variants
+# 20 caQTLs overlap with subtype specific DAS 
+# filter(rsID %in% VCF_file_withInfo_TYPED$ID) # Can be used if wanting to restrict to TYPED SNPs
+
+rasqual_results_filter_stand <- NonPermute_Results_FDRFilter %>% filter(rsID != "SKIPPED") %>% 
+  filter(str_length(Ref) == 1, str_length(Alt) == 1) %>% 
+  mutate(Pi_Delta = EffectSize - 0.50) %>% 
+  arrange(desc(abs(Pi_Delta))) %>% 
+  ungroup() %>% 
+  mutate(ID_hg19 = paste0(Chrom,":",SNPpos,"-",SNPpos + 1,":",Ref,":",Alt))
+
+
+# Write out full table of significant caQTLs 
+setwd("/Volumes/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL")
+rasqual_results_filter_stand %>%
+  mutate(chr = Chrom, start = SNPpos - 1, end = SNPpos) %>% 
+  select(chr, start, end, Pi_Delta) %>% 
+  write_tsv(file = "rasqual_results_filter_stand_FDR10_corrected.bed", col_names = FALSE)
+
+
+# Scatterplot of effect size versus -log10(q-value)
+rasqual_results_filter_stand %>% 
+    ggplot(aes(x = Pi_Delta, y = -Log10Qval)) + 
+    geom_point(alpha = 0.25, size = 0.5) +
+    xlab("Effect Size") +
+    ylab("-log10(Q-value)") +
+    theme_bw() +
+    theme(axis.title = element_text(size = 14), axis.text = element_text(size = 10))
+
+
+# Segregate groups into genotypes
+# Also require total allele specific counts to be beyond a count threshold
+
+homoz_REF_stand <- BCell_OCR_VCF_AScounts %>% filter(ID %in% rasqual_results_filter_stand$rsID) %>% 
+  pivot_longer(cols = 10:78, names_to = "vcf_name", values_to = "values") %>% 
+  filter(str_detect(values, pattern = "0\\|0")) %>% 
+  separate(values, into = c("GT", "DS", "HDS", "GP", "AS"), sep = ":") %>% 
+  separate(AS, into = c("ChrA", "ChrB"), sep = ",", convert = TRUE) %>% 
+  mutate(AS_sum = ChrA + ChrB, ratioA = ChrA / AS_sum, ratioB = ChrB / AS_sum) %>% 
+  filter(AS_sum >= 5)
+
+homoz_ALT_stand <- BCell_OCR_VCF_AScounts %>% filter(ID %in% rasqual_results_filter_stand$rsID) %>% 
+  pivot_longer(cols = 10:78, names_to = "vcf_name", values_to = "values") %>% 
+  filter(str_detect(values, pattern = "1\\|1")) %>% 
+  separate(values, into = c("GT", "DS", "HDS", "GP", "AS"), sep = ":") %>% 
+  separate(AS, into = c("ChrA", "ChrB"), sep = ",", convert = TRUE) %>% 
+  mutate(AS_sum = ChrA + ChrB, ratioA = ChrA / AS_sum, ratioB = ChrB / AS_sum) %>% 
+  filter(AS_sum >= 5)
+
+heteroz_REFALT_stand <- BCell_OCR_VCF_AScounts %>% filter(ID %in% rasqual_results_filter_stand$rsID) %>% 
+  pivot_longer(cols = 10:78, names_to = "vcf_name", values_to = "values") %>% 
+  filter(str_detect(values, pattern = "0\\|1|1\\|0")) %>% 
+  separate(values, into = c("GT", "DS", "HDS", "GP", "AS"), sep = ":") %>% 
+  separate(AS, into = c("ChrA", "ChrB"), sep = ",", convert = TRUE) %>% 
+  mutate(AS_sum = ChrA + ChrB, ratioA = ChrA / AS_sum, ratioB = ChrB / AS_sum) %>% 
+  filter(AS_sum >= 5)
+
+
+# Get SNPs that have at least three samples in all three genotypes  
+Full_Geno_Group_SNPs <- bind_rows(homoz_REF = homoz_REF_stand, homoz_ALT = homoz_ALT_stand, heteroz_REFALT = heteroz_REFALT_stand, .id = "Geno_Group") %>% 
+  inner_join(Sample_info_master_qualityFilter_wVCFnames %>% select(vcf_name, Sample2), by = c("vcf_name")) %>% 
+  dplyr::count(Geno_Group, ID) %>% 
+  inner_join(rasqual_results_filter_stand %>% select(rsID, Pi_Delta, ID_hg19), by = c("ID" = "rsID")) %>% 
+  filter(n >= 5) %>% 
+  add_count(ID) %>% 
+  filter(nn == 3)
+
+# Get set of top hits that have full genotype representation
+Full_Geno_Group_SNPs_top_hits <- Full_Geno_Group_SNPs %>% inner_join(Combined_Top, by = c("ID" = "rsID", "Pi_Delta", "ID_hg19")) %>% filter(Geno_Group == "heteroz_REFALT") 
+
+# Get top ref up examples
+Full_Geno_Group_SNPs_top_hits_REFUP <- Full_Geno_Group_SNPs_top_hits %>% filter(Geno_Group == "heteroz_REFALT") %>% slice_min(order_by = Pi_Delta, n = 6)
+# Get top alt up examples 
+Full_Geno_Group_SNPs_top_hits_ALTUP <- Full_Geno_Group_SNPs_top_hits %>% filter(Geno_Group == "heteroz_REFALT") %>% slice_max(order_by = Pi_Delta, n = 6)
+
+
+geno_group_colors <- c(homoz_REF = "firebrick3", heteroz_REFALT = "mediumpurple2", homoz_ALT ="dodgerblue3")
+                  
+# Box plot series 
+bind_rows(homoz_REF = homoz_REF_stand, homoz_ALT = homoz_ALT_stand, heteroz_REFALT = heteroz_REFALT_stand, .id = "Geno_Group") %>% 
+  left_join(size_factors_wVCFname) %>% 
+  mutate(ChrA = ChrA / SF, ChrB = ChrB / SF, AS_sum = AS_sum / SF) %>% 
+  filter(ID %in% Full_Geno_Group_SNPs_top_hits_ALTUP$ID) %>%
+  mutate(Geno_Group = factor(Geno_Group, levels = c("homoz_REF", "heteroz_REFALT", "homoz_ALT"))) %>% 
+  inner_join(rasqual_results_filter_stand %>% select(rsID, ID_hg19, EffectSize, Log10Qval), by = c("ID" = "rsID")) %>%
+  unite(col = "ID_Pi", ID_hg19, EffectSize, sep = "_") %>% 
+  ggplot(aes(x = Geno_Group, y = AS_sum + 1)) +
+  geom_boxplot() +
+  scale_fill_manual(values=geno_group_colors) +
+  geom_jitter(alpha = 0.30) +
+  scale_y_log10() +
+  facet_wrap(~ ID_Pi) +
+  theme_bw()
+
+
+
+```
+
+# Intersect caQTLs with bound motifs from TOBIAS
+
+```{r}
+
+setwd("/Volumes/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/rasqual_caQTL/")
+caQTLs_Motif_Bound <- fread(file = "rasqual_results_filter_stand_FDR10_BoundMotif_Intersect.bed", header = FALSE, col.names = c("chr", "start", "end", "Pi_Delta", "Motif_chr", "Motif_start", "Motif_end", "Motif_ID", "Score", "Strand", "Region_chr", "Region_start", "Region_end", "Add_info", "Bound_score", "Overlap")) %>% 
+  separate(Bound_score, into = c("Bound_score", "File"), sep = "\\s", convert = TRUE) %>% 
+  separate(File, into = c("TF", "JasparID", "Subtype"), sep = "_") %>% 
+  filter(!Subtype %in% c("BNormAlt", "BOther"))
+
+
+# Get clusters for motifs 
+# Pulled from a single run of motif clustering
+# Different runs of motif clustering do not yield the same results due to random seed
+
+# Read in clusters from TOBIAS ClusterMotifs
+motif_comparison_clusters <- yaml.load_file("/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams/Tobias/bindetect/clustermotifs_output/motif_comparison_clusters.yml", as.named.list = TRUE)
+
+# Reformat TOBIAS clusters into dataframe
+motif_comparison_clusters_unlisted <- setNames(unlist(motif_comparison_clusters, use.names=F),rep(names(motif_comparison_clusters), lengths(motif_comparison_clusters)))
+
+Cluster_Key <- tibble(Cluster = names(motif_comparison_clusters_unlisted), Motif_ID = motif_comparison_clusters_unlisted) %>% separate(Motif_ID, into = c("JasparID", "MotifName"), sep = "\\s") %>% distinct(Cluster, .keep_all = TRUE) %>% mutate(ClusterRep = MotifName) %>% 
+  select(Cluster, ClusterRep)
+
+motif_comparison_clusters_df <- tibble(Cluster = names(motif_comparison_clusters_unlisted), Motif_ID = motif_comparison_clusters_unlisted) %>% separate(Motif_ID, into = c("JasparID", "MotifName"), sep = "\\s") %>% 
+  left_join(Cluster_Key, by = "Cluster")
+
+
+# Motif clustering from BCRABL1 TOBIAS run
+# Different than ClusterMotifs in that it uses TF site overlap scoring rather than motif similarity scoring
+Motif_Clusters <- read_tsv(file = "/Volumes/projects/Drug_GRNs/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams/Tobias/bindetect/BCRABL1_vs_BNorm/bindetect_results.txt", col_names = c("Motif_ID", "Cluster"), col_select = c("Motif_ID", "Cluster"), skip = 1)
+
+
+caQTLs_Motif_Bound_wCluster <- caQTLs_Motif_Bound %>% left_join(Motif_Clusters, by = "Motif_ID")
+
+
+# Remove duplicate regions
+# Then calculate which motif cluster shows up most frequently
+# Count of bound motif families that overlap caQTLs
+
+top_footprint_Motifs <- caQTLs_Motif_Bound_wCluster %>% distinct(chr, start, end, Motif_start, Motif_end, .keep_all = TRUE) %>% count(Cluster) %>% arrange(desc(n)) %>% 
+  slice_max(order_by = n, n = 20)
+
+
+caQTLs_Motif_Bound_wCluster %>% distinct(chr, start, end, Motif_start, Motif_end, .keep_all = TRUE) %>% 
+  filter(Cluster %in% top_footprint_Motifs$Cluster) %>% 
+  mutate(Cluster = factor(Cluster, levels = top_footprint_Motifs %>% pull(Cluster))) %>% 
+  ggplot(aes(x = Cluster, y = ..count.., fill = Cluster)) +
+  geom_bar(color = "black", width = 0.6) + 
+  xlab("Motif Family") +
+  ylab("Count of Bound Motifs Overlapping ATAC-QTLs") +
+  scale_fill_manual(values = magma(n = nrow(top_footprint_Motifs), direction = -1)) +
+  theme_bw() +
+  theme(legend.position = "none", axis.title = element_text(size = 14), axis.text.y = element_text(size = 12), axis.text.x = element_text(size = 12, angle = 60, hjust = 1, vjust = 1))
+
+
+
+```

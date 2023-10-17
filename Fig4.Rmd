@@ -1,0 +1,71 @@
+---
+title: "Subtype Specific DAS"
+author: "Kelly Barnett"
+date: "2023-10-17"
+output: html_document
+---
+
+
+```{r setup libraries}
+.libPaths("/home/kbarnett/R_4.1")
+library(DESeq2)
+library(tidyverse)
+library(BiocParallel)
+library(readxl)
+library(data.table)
+library(ggrepel)
+library(MASS)
+library(pheatmap)
+library(RColorBrewer)
+```
+
+
+```{r Read in counts matrices}
+setwd("/research/projects/savicgrp/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/counts")
+cts_BALL_BNorm <- fread(file = "BALL_BNorm_PhGrouped_Merged_summit_interval_filtered_counts.txt", header = TRUE, skip =1) %>% unite(col = "Region", 2:4)
+
+# Remove samples not passsing quality filter
+B_Full_cts_filter <- cts_BALL_BNorm %>% dplyr::select(Region, Sample_info_master_qualityFilter %>% pull(Sample))
+
+
+# Transform tibble into matrix with rownames 
+B_cts_matrix <- as.matrix(data.frame(B_Full_cts_filter[,-1], row.names = B_Full_cts_filter$Region))
+
+```
+
+```{r Setup DESeq2 for subtype versus all other ALL samples}
+
+# Create edited design data that regroups BCR-ABL1 and both Ph-like subtypes together
+Design_data_Ph <- Design_data %>% mutate(Group = case_when(str_detect(Group, pattern = "Ph-") ~ "Ph_grouped", TRUE ~ Group)) %>% 
+  unite(col = "Group_wName", c("Group", "ID"), sep = "_", remove = FALSE)
+
+Groups_for_SubVSALL <- Design_data_Ph %>% filter(Class == "B_ALL") %>% distinct(Group) %>% pull()
+
+rotate_subtype_vs_total_Bcells <- function(Subtype) {
+Design_data_Ph %>% mutate(subtype_vs_total = case_when(Group != Subtype & Class == "B_ALL" ~ "B_ALL", , Group == Subtype ~ Subtype))
+}
+
+rotations <- map(Groups_for_SubVSALL, rotate_subtype_vs_total_Bcells)
+
+sub_versus_ALL <- function(design) {
+dds <- DESeqDataSetFromMatrix(countData = B_cts_matrix %>% as_tibble(rownames = "Region") %>% dplyr::select(Region, design %>% filter(Class == "B_ALL") %>% rownames()) %>% column_to_rownames(var = "Region"),
+                              colData = design %>% filter(Class == "B_ALL"),
+                              design = ~ TSS_Enrich_ZScore + Site + SeqRun + subtype_vs_total)
+dds$subtype_vs_total <- relevel(dds$subtype_vs_total, ref = "B_ALL")
+# Run wald test
+dds <- DESeq(dds, test="Wald", parallel = TRUE, BPPARAM=MulticoreParam(16))
+# Prepare list of DESeq contrasts to get results for
+resultNames_list <- resultsNames(dds)
+names(resultNames_list) <- resultsNames(dds)
+# Define results function
+dds_results <- function(name = name) {
+  results(dds, name = name, tidy = TRUE, altHypothesis = "greaterAbs")
+}
+# Get all results, no filtering
+Full_results <- map_df(.x = resultNames_list, .f = dds_results, .id = "Contrast")
+}
+
+save(rotations, B_cts_matrix, file = "DeSeqDesign.RData")
+```
+
+

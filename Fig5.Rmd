@@ -1,0 +1,318 @@
+---
+title: "Footprinting Analysis"
+author: "Kelly Barnett"
+date: "2023-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggforce)
+library(pheatmap)
+library(RColorBrewer)
+library(readxl)
+
+```
+
+
+Transcription factor footprints were identified across multiple ALL subtypes along with normal subtypes using the TOBIAS pipeline. These footprints were scanned for among the full input set of ATAC-seq regions of interest that were also used to find differential chromatin accessibility. 
+
+
+```{r Read in and prepare footprint data, include=FALSE}
+# list directories to search for footprint results files
+sample_dirs_merge_bcell_regions <- list.files(path = "/Volumes/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/tobias/total_regions_ProB_vs_Subtype/bindetect", full.names = TRUE)
+
+
+# search directories for files
+footprint_files_merge_bcell_regions <- map(sample_dirs_merge_bcell_regions, list.files, pattern = "*_results.txt", full.names = TRUE)
+# Set names of files 
+names(footprint_files_merge_bcell_regions) <- footprint_files_merge_bcell_regions %>% str_remove(pattern = "/Volumes/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/tobias/total_regions_ProB_vs_Subtype/bindetect/") %>% 
+  str_remove(pattern = "/bindetect_results.txt")
+
+# read in footprint data from files
+Footprint_results_merge_bcell_regions <- map_df(footprint_files_merge_bcell_regions, read_tsv, col_names = c("fullname", "name", "motif_id", "cluster", "total_tfbs", "ALL_mean_score", "ALL_bound_sites", "BNorm_mean_score", "BNorm_bound_sites", "ALL_BNorm_change", "pval"), skip = 1, .id = "Sample") %>% 
+  filter(str_detect(Sample, pattern = "_vs_")) %>% 
+  mutate(Subtype = str_remove(Sample, pattern = "_vs_ProB"))
+```
+
+```{r Read in and prepare footprint data from subsp regions, include=FALSE}
+sample_dirs_subsp_regions <- list.files(path = "/Volumes/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/tobias/subsp_regions_Subtypes/bindetect", full.names = TRUE)
+
+# search directories for files
+footprint_files_subsp_regions <- map_chr(sample_dirs_subsp_regions, list.files, pattern = "*results.txt", full.names = TRUE)
+# Set names of files 
+names(footprint_files_subsp_regions) <- footprint_files_subsp_regions %>% str_remove(pattern = "/Volumes/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/tobias/subsp_regions_Subtypes/bindetect/") %>% 
+str_split_i(pattern = "/", i = 1)
+  
+# read in footprint data from files
+Footprint_results_files_subsp_regions <- map_df(footprint_files_subsp_regions, read_tsv, col_names = c("fullname", "name", "motif_id", "cluster", "total_tfbs", "ALL_mean_score", "ALL_bound_sites"), skip = 1, .id = "Subtype") %>% 
+  filter(str_detect(Sample, pattern = "enrich"))
+
+```
+```{r Scale footprint scores for heatmap}
+
+# Write function for covenient scaling of values (z-score)
+scale_this <- function(x){
+  (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+}
+
+# Get Z-score of mean footprint score for each motif ID
+Footprint_results_merge_bcell_regions2 <- Footprint_results_merge_bcell_regions %>% group_by(motif_id) %>% 
+  mutate(ALL_mean_Zscore = scale_this(ALL_mean_score)) %>% ungroup()
+
+Footprint_results_files_subsp_regions2 <- Footprint_results_files_subsp_regions %>% group_by(motif_id) %>% 
+  mutate(ALL_mean_Zscore = scale_this(ALL_mean_score)) %>% ungroup()
+
+# Get motif clusters 
+Motif_Clusters <- read_tsv(file = "/Volumes/savicgrp/Kelly/Fresh_ALL_patient_ATACseq_results/All_Bams/merged_bams/Tobias/bindetect/BCRABL1_vs_BNorm/bindetect_results.txt", col_names = c("Motif_ID", "Cluster"), col_select = c("Motif_ID", "Cluster"), skip = 1)
+
+
+```
+
+```{r Matrix of differential footprint scores between subtypes}
+Footprint_results_files_subsp_regions2
+
+Footprint_results_merge_bcell_regions_matrix <- Footprint_results_merge_bcell_regions2 %>% select(Subtype, fullname, ALL_mean_Zscore) %>% 
+  pivot_wider(names_from = "Subtype", values_from = "ALL_mean_Zscore")
+
+# Get combinations of subtypes
+Combos <- expand_grid(x = Footprint_results_merge_bcell_regions2 %>% distinct(Subtype) %>% pull(Subtype),
+            y = Footprint_results_merge_bcell_regions2 %>% distinct(Subtype) %>% pull(Subtype))
+
+# Set up function to calculate differential between subtype pairs
+Diff_Scores <- function(X, Y, scores) {
+
+X_filter <- Footprint_results_merge_bcell_regions2 %>% 
+  filter(Subtype == X) %>% select(scores)
+
+Y_filter <- Footprint_results_merge_bcell_regions2 %>% 
+  filter(Subtype == Y) %>% select(scores)
+
+Diff <- tibble(X_filter - Y_filter) %>% mutate(Sub_X = X, Sub_Y = Y) %>% 
+  rename("Diff_mean_score" = scores) %>% 
+  bind_cols(fullname = Footprint_results_merge_bcell_regions2 %>% filter(Subtype == "BCRABL1") %>% pull(fullname))
+}
+
+# Run differential function on all subtype pairs
+Diff_scores_dataframe <- map2_dfr(Combos %>% pull(x), Combos %>% pull(y), Diff_Scores, scores = "ALL_mean_Zscore")
+
+# Get top upregulated TF binding according to score differentials
+SubSp_TFs_Max <- Diff_scores_dataframe %>% filter(Sub_X != Sub_Y) %>% 
+  left_join(Motif_Clusters, by = c("fullname" = "Motif_ID")) %>% 
+  group_by(Sub_X, fullname, Cluster) %>% 
+  summarise(median_diff = median(Diff_mean_score), mean_diff =  mean(Diff_mean_score), sum_diff = sum(Diff_mean_score)) %>% 
+  ungroup() %>% 
+  group_by(Sub_X, Cluster) %>% 
+  slice_max(order_by = median_diff, n = 1) %>% 
+  ungroup() %>% 
+  group_by(Sub_X) %>% 
+  slice_max(median_diff, n = 15)
+
+SubSp_TFs_Sum <- Diff_scores_dataframe %>% filter(Sub_X != Sub_Y) %>% 
+  group_by(Sub_X, fullname) %>% 
+  summarise(median_diff = median(Diff_mean_score), mean_diff =  mean(Diff_mean_score), sum_diff = sum(Diff_mean_score)) %>% 
+  filter(motif_id %in% Expressed_TF_Threshold_table$MotifID) %>% 
+  slice_max(order_by = median_diff, n = 20) %>% 
+  ungroup()
+
+
+TFs_Footprints_DiffScores <- Diff_scores_dataframe %>% filter(Sub_X != Sub_Y) %>% 
+  group_by(Sub_X, fullname) %>% 
+  summarise(median_diff = median(Diff_mean_score), mean_diff =  mean(Diff_mean_score)) %>% 
+  ungroup()
+
+
+# Get bottom upregulated TF binding according to score differentials
+SubSp_TFs_Min <- Diff_scores_dataframe %>% filter(Sub_X != Sub_Y) %>% 
+  group_by(Sub_X, fullname) %>% 
+  summarise(median_diff = median(Diff_mean_score), mean_diff =  mean(Diff_mean_score)) %>% 
+  slice_min(order_by = median_diff, n = 20) %>% 
+  ungroup()
+
+SubSp_TFs_MinMax_Fullset <- bind_rows(SubSp_TFs_Max, SubSp_TFs_Min) %>% distinct(fullname)
+  
+# Prepare table of RNA-seq TPMs for TF motifs to use as a filter
+Expressed_TF_Threshold_table <- TPM_Subtype_Mean %>% inner_join(motif_genenames, by = c("GeneID" = "ENSEMBL")) %>% 
+  ungroup() %>% 
+  group_by(Group, GeneID) %>% 
+  filter(TPM_mean >= 0.20)
+
+
+
+
+# Make heatmap with top TFs
+# Threshold with RNA expression
+
+Footprint_results_merge_bcell_regions2 %>% 
+  filter(motif_id %in% Expressed_TF_Threshold_table$MotifID) %>% 
+  dplyr::select(Subtype, fullname, ALL_mean_Zscore) %>%
+  filter(fullname %in% SubSp_TFs_Max$fullname) %>% 
+  pivot_wider(names_from = "fullname", values_from = "ALL_mean_Zscore") %>% 
+  column_to_rownames(var = "Subtype") %>% 
+  pheatmap(color = colorRampPalette(rev(brewer.pal(n = 11, name = "PRGn")))(11), cellwidth = 4, cellheight = 4, cluster_rows=T, cluster_cols=T, scale = "none", show_rownames = TRUE, show_colnames = TRUE, border_color = "white")
+
+```
+
+
+# TF footprint plots of subtype vs. non-subtype, enriched DAS
+
+```{r read in data}
+sample_dirs_subSp_enrich <- list.files(path = "/Volumes/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/tobias/leave_out_analysis/BSubsets_LeaveOut_ENRICHED/bindetect", full.names = TRUE)
+
+# search directories for files
+footprint_files_subSp_enrich <- map(sample_dirs_subSp_enrich, list.files, pattern = "*_results.txt", full.names = TRUE)
+names(footprint_files_subSp_enrich) <- footprint_files_subSp_enrich %>% str_remove(pattern = "/Volumes/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/tobias/leave_out_analysis/BSubsets_LeaveOut_ENRICHED/bindetect/") %>% 
+  str_split_i(pattern = "/", i = 1) %>% 
+  str_split_i(pattern = "_", i = 1)
+# Load table mapping motif ids to gene ids
+# load("motif_to_geneID_table.RData")
+
+# read in footprint data from files
+# Add in ensembl gene ids and counts to table
+Footprint_summaries_subSp_enrich <- map_df(footprint_files_subSp_enrich, read_tsv, col_names = c("fullname", "name", "motif_id", "cluster", "total_tfbs", "mean_score_ALL", "bound_sites_ALL", "mean_score_LeaveOut", "bound_sites_LeaveOut", "ALL_LeaveOut_Change", "PVal"), skip = 1, .id = "Sample") %>% 
+  mutate(Sample = recode(Sample, BCRABL1 = "BCR-ABL1",
+                         DUX4 = "DUX4",
+                         ETV6RUNX1 = "ETV6-RUNX1",
+                         Hyper = "Hyperdiploid",
+                         Hypo = "Low hypodiploid",
+                         KMT2A = "KMT2A",
+                         PAX5 = "PAX5",
+                         PhLike = "Ph_like",
+                         TCF3PBX1 = "TCF3-PBX1",
+                         ZNF384 = "ZNF384"
+                         )) %>%
+  left_join(motif_genenames, by = c("motif_id" = "MotifID")) %>% 
+  left_join(TPM_Subtype_Mean, by = c("ENSEMBL" = "GeneID", "Sample" = "Group")) %>% 
+  mutate(TPM_mean = case_when(motif_id == "MA0149.1" ~ 316, TRUE ~ TPM_mean)) %>% 
+  mutate(TPM_Mean_log = log2(TPM_mean + 1))
+
+```
+
+```{r prep for plots plots}
+
+# Set highlighting rule as top 10% for each subtype 
+Top_10Percent_motifnames_enrich <- Footprint_summaries_subSp_enrich %>% ungroup() %>% 
+  group_by(Sample) %>% 
+  slice_max(order_by = ALL_LeaveOut_Change, prop = 0.10) %>% 
+  ungroup() %>% 
+  dplyr::select(fullname) %>% 
+  distinct(fullname)
+
+Footprint_summaries_subSp_top_enrich <- Footprint_summaries_subSp_enrich %>% mutate(Top10 = fullname %in% Top_10Percent_motifnames_enrich$fullname)
+Subtypes <- Footprint_summaries_subSp_enrich %>% distinct(Sample) %>% pull(Sample)
+
+```
+
+```{r plotting function}
+multi_plots2 <- function(x) {
+  
+Top_10Percent_motifnames <- Footprint_summaries_subSp_enrich %>% 
+  ungroup() %>% 
+  mutate(Rank = ALL_LeaveOut_Change / PVal) %>% 
+  group_by(Sample) %>% 
+  slice_max(order_by = ALL_LeaveOut_Change, prop = 0.05) %>% 
+  ungroup() %>% 
+  filter(Sample == x) %>% 
+  dplyr::select(fullname) 
+
+  zoom_expand <- 0.30
+
+  plot_zoom <- Footprint_summaries_subSp_top_enrich %>% filter(Sample == x, TPM_Mean_log != 0, ALL_LeaveOut_Change > 0) %>% 
+  filter(fullname %in% Top_10Percent_motifnames$fullname) %>% 
+  summarise(min_x = min(ALL_LeaveOut_Change), max_x = max(ALL_LeaveOut_Change),
+              min_y = min(-log10(PVal)), max_y = max(-log10(PVal))) %>% 
+    mutate(min_x_add = min_x - (min_x * zoom_expand), max_x_add = max_x + (max_x * zoom_expand),
+           min_y_add = min_y - (min_y * zoom_expand), max_y_add = max_y + (max_y * zoom_expand))
+
+  Footprint_summaries_subSp_top_enrich %>% filter(Sample == x, TPM_Mean_log != 0, ALL_LeaveOut_Change > 0) %>% ggplot(aes(x = ALL_LeaveOut_Change, y = -log10(PVal))) +
+  geom_point(show.legend = TRUE, aes(color = TPM_Mean_log, size = TPM_Mean_log)) +
+  scale_color_viridis_c(option = "viridis", guide = "legend") + 
+  xlab("Differential Footprint Score") +
+  gghighlight(fullname %in% Top_10Percent_motifnames$fullname, unhighlighted_params = aes(color = "gray", fill = "gray", size = 0.65)) +
+  #geom_text_repel(show.legend = FALSE, aes(label = name), point.padding = 4, min.segment.length = unit(0, 'mm')) +
+  #geom_text_repel(show.legend = FALSE, aes(label = name), box.padding = 0.5, max.overlaps = 40) +
+  #coord_cartesian(xlim = c(plot_zoom %>% pull(min_x_add),plot_zoom %>% pull(max_x_add)), ylim = c(plot_zoom %>% pull(min_y_add), plot_zoom %>% pull(max_y_add)), expand = TRUE) +
+  theme_bw() +
+  ggtitle(label = paste0(x,"-enriched DAS")) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16), panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+}
+
+# Make list of plots
+enrich_plots <- map(Subtypes, multi_plots2)
+
+# Name list of plots
+names(enrich_plots) <- Subtypes
+
+# Generate list of filenames for plots
+enrich_plots_file_names <- stringr::str_c(names(enrich_plots), "_Footprints_SubSp_enrichedDAS.pdf")
+
+# Loop through list of plots and write files
+pwalk(list(enrich_plots_file_names, enrich_plots),
+      ggsave,
+      device="pdf",
+      width=8, 
+      height=6,
+      units="in",
+      dpi=300,
+      path = "/Users/kbarnett/Documents/R_Analysis/ALL_ATAC_Footprinting_Tobias")
+
+```
+
+```{r plotting function with zoom}
+multi_plots2_zoom <- function(x) {
+  
+Top_10Percent_motifnames <- Footprint_summaries_subSp_enrich %>% 
+  ungroup() %>% 
+  mutate(Rank = ALL_LeaveOut_Change / PVal) %>% 
+  group_by(Sample) %>% 
+  slice_max(order_by = ALL_LeaveOut_Change, prop = 0.05) %>% 
+  ungroup() %>% 
+  filter(Sample == x) %>% 
+  dplyr::select(fullname) 
+
+  zoom_expand <- 0.30
+
+  plot_zoom <- Footprint_summaries_subSp_top_enrich %>% filter(Sample == x, TPM_Mean_log != 0, ALL_LeaveOut_Change > 0) %>% 
+  filter(fullname %in% Top_10Percent_motifnames$fullname) %>% 
+  summarise(min_x = min(ALL_LeaveOut_Change), max_x = max(ALL_LeaveOut_Change),
+              min_y = min(-log10(PVal)), max_y = max(-log10(PVal))) %>% 
+    mutate(min_x_add = min_x - (min_x * zoom_expand), max_x_add = max_x + (max_x * zoom_expand),
+           min_y_add = min_y - (min_y * zoom_expand), max_y_add = max_y + (max_y * zoom_expand))
+
+  Footprint_summaries_subSp_top_enrich %>% filter(Sample == x, TPM_Mean_log != 0, ALL_LeaveOut_Change > 0) %>% ggplot(aes(x = ALL_LeaveOut_Change, y = -log10(PVal))) +
+  geom_point(show.legend = TRUE, aes(color = TPM_Mean_log, size = TPM_Mean_log)) +
+  scale_color_viridis_c(option = "viridis", guide = "legend") + 
+  xlab("Differential Footprint Score") +
+  gghighlight(fullname %in% Top_10Percent_motifnames$fullname, unhighlighted_params = aes(color = "gray", fill = "gray", size = 0.65)) +
+  #geom_text_repel(show.legend = FALSE, aes(label = name), point.padding = 4, min.segment.length = unit(0, 'mm')) +
+  geom_text_repel(show.legend = FALSE, aes(label = name), box.padding = 0.5, max.overlaps = 40, force = 40, max.iter = 100000) +
+  coord_cartesian(xlim = c(plot_zoom %>% pull(min_x_add),plot_zoom %>% pull(max_x_add)), ylim = c(plot_zoom %>% pull(min_y_add), plot_zoom %>% pull(max_y_add)), expand = TRUE) +
+  theme_bw() +
+  ggtitle(label = paste0(x,"-enriched DAS")) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16), panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+}
+
+# Make list of plots
+enrich_plots_zoom <- map(Subtypes, multi_plots2_zoom)
+
+# Name list of plots
+names(enrich_plots_zoom) <- Subtypes
+
+# Generate list of filenames for plots
+enrich_plots_zoom_file_names <- stringr::str_c(names(enrich_plots_zoom), "_Footprints_SubSp_enrichedDAS_ZOOM.pdf")
+
+# Loop through list of plots and write files
+pwalk(list(enrich_plots_zoom_file_names, enrich_plots_zoom),
+      ggsave,
+      device="pdf",
+      width=8, 
+      height=6,
+      units="in",
+      dpi=300,
+      path = "/Users/kbarnett/Documents/R_Analysis/ALL_ATAC_Footprinting_Tobias")
+
+```

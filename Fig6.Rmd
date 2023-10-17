@@ -1,0 +1,171 @@
+---
+title: "Subtype Classification Using DAS"
+author: "Kelly Barnett"
+date: "2023-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+Subtype_matrix_forPCA <- vsd_B %>% pivot_longer(cols = where(is.numeric), names_to = "Sample", values_to = "VST_ATAC") %>% 
+  mutate(Sample = str_remove(Sample, pattern = "X")) %>% 
+  filter(Region %in% Subtype_Specific_SubVSALL_SubtypeCorrection$row) %>% 
+  left_join(Sample_info_master_qualityFilter_mod %>% dplyr::select(Sample2, Group), by = c("Sample" = "Sample2")) %>% 
+  mutate(Group = case_when(Group == "Ph_like" ~ "Ph-Like", TRUE ~ Group)) %>% 
+  filter(!Group %in% c("B-Other", "ETP", "T", "Unknown", NA, "iAMP21", "IKZF1 N159Y", "ETV6RUNX1-Like")) %>% 
+  pivot_wider(names_from = "Region", values_from = "VST_ATAC")
+
+Subtype_matrix_forPCA_PhGroup <- vsd_B %>% pivot_longer(cols = where(is.numeric), names_to = "Sample", values_to = "VST_ATAC") %>% 
+  mutate(Sample = str_remove(Sample, pattern = "X")) %>% 
+  filter(Region %in% Subtype_Specific_SubVSALL_SubtypeCorrection$row) %>% 
+  left_join(Sample_info_master_qualityFilter_mod %>% dplyr::select(Sample2, Group), by = c("Sample" = "Sample2")) %>% 
+  filter(!Group %in% c("B-Other", "ETP", "T", "Unknown", NA, "iAMP21", "IKZF1 N159Y", "ETV6RUNX1-Like")) %>% 
+  mutate(Group = case_when(Group == "Ph_like|BCR-ABL1" ~ "Ph_Group", TRUE ~ Group)) %>% 
+  pivot_wider(names_from = "Region", values_from = "VST_ATAC")
+
+# Calculate principle components
+Subtype_spec_prcomp <- prcomp(Subtype_matrix_forPCA %>% select(where(is.numeric)), scale. = TRUE, rank = 100)
+
+# Select how many component to use in LDA analysis
+# summary(Subtype_spec_prcomp)
+
+# Construct table to feed LDA
+LDA_prcomps <- bind_cols(Subtype = Subtype_matrix_forPCA$Group,Subtype_spec_prcomp$x[,1:17]) 
+
+
+
+# Calculate LDA on PCA dimensions 
+lda_subtype_model <- lda(formula = Subtype~., data = LDA_prcomps)
+
+# Apply full model to original data
+# Not necessarily 100% accurate for subtype prediction even with full model
+lda_subtype_values <- predict(lda_subtype_model)
+# Inspect full model accuracy
+tibble(LDA_prcomps$Subtype,lda_subtype_values$class) %>% View()
+
+# Calculate performance of model with leave one out cross validation
+LOOCV <- lda(formula = Subtype~., data = LDA_prcomps, CV = TRUE)
+
+# Validation table
+Validation_table <- tibble(Truth = LDA_prcomps$Subtype, Validation = LOOCV$class)
+# Calculate accuracy of LOOCV 
+mean(Validation_table$Truth == LOOCV$class, na.rm = TRUE)
+
+# Examine accuracy on a per subtype basis
+Accuracy_table <- Validation_table %>% mutate(Accuracy = case_when(Truth == Validation ~ "Correct", TRUE ~ "Incorrect")) %>%
+  group_by(Truth) %>%
+  summarise(Stat = (sum(Accuracy == "Correct") / n())*100, N = n())
+
+# Plot LDA 
+
+data_for_LDA_plot <- bind_cols(Subtypes = LDA_prcomps$Subtype, Model_class = lda_subtype_values$class, lda_subtype_values$x, Validation = LOOCV$class) %>% 
+  mutate(Correct = Subtypes == Validation)
+
+# 3D plot
+library(plotly)
+
+plot_colors_3d <- c("#999999", "#E69F00", "#009E73", "#F0E442", "#0072B2", "#E14209FF", "#CC79A7", "#4686FBFF", "#A2FC3CFF", "#7A0403FF")
+
+
+fig_3D_123 <- plot_ly(data_for_LDA_plot, x = ~LD1, y = ~LD2, z = ~LD3, color = ~as.factor(Subtypes), colors = publication_colors$colors, alpha = 0.90)
+fig_3D_123 <- fig_3D_123 %>% add_markers()
+fig_3D_123 <- fig_3D_123 %>% layout(scene = list(xaxis = list(title = 'Coord. 1', titlefont = list(size = 20), tickfont = list(size = 15)),
+                     yaxis = list(title = 'Coord. 2', titlefont = list(size = 20), tickfont = list(size = 15)),
+                     zaxis = list(title = 'Coord. 3', titlefont = list(size = 20), tickfont = list(size = 15))), showlegend = FALSE)
+
+# Confusion matrix heatmap 
+library(caret)
+cf_matrix <- confusionMatrix(data = Validation_table$Validation, reference = as.factor(Validation_table$Truth))
+
+F1_stats <- cf_matrix$byClass %>% as_tibble(rownames = "Subtype") %>% mutate(Subtype = str_remove(Subtype, pattern = "Class: ")) %>% select(Subtype, Sensitivity)
+
+cf_matrix$table %>% as_tibble() %>% 
+  left_join(Accuracy_table, by = c("Prediction" = "Truth")) %>% 
+  mutate(percent = (n/N)*100) %>% 
+  ggplot(aes(x=Prediction, y=Reference, fill=percent)) +
+  geom_tile(color = "white", size = 1) + theme_bw() + coord_equal() +
+  scale_fill_viridis() +
+  geom_text(aes(label=n), color="white", size = 6) +
+  ylab("Truth") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title = element_text(size = 14), axis.text = element_text(size = 10),
+        axis.ticks = element_line(size = 1), axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1), legend.position="none")
+
+```
+
+# Find optimal number of principle component for model
+
+```{r}
+# Setup as function to use with optim()
+
+lda_numPCs <- function(x) {
+LDA_prcomps <- bind_cols(Subtype = Subtype_matrix_forPCA$Group,Subtype_spec_prcomp$x[,1:x]) %>% filter(str_detect(Subtype, pattern = "Other", negate = TRUE))
+LOOCV <- lda(formula = Subtype~., data = LDA_prcomps, CV = TRUE)
+Validation_table <- tibble(Truth = LDA_prcomps$Subtype, Validation = LOOCV$class)
+mean(Validation_table$Truth == LOOCV$class, na.rm = TRUE)
+}
+
+
+optimize(lda_numPCs, interval = 1:100, lower = 1, upper = 100, maximum = TRUE)
+
+# Get list of accuracy results for all #s of principle components
+map_dbl(1:100, lda_numPCs)
+
+# Plot accuracy versus number of principle components
+bind_cols(numPCs = 1:100, Accur = map_dbl(1:100, lda_numPCs)) %>% 
+  ggplot(aes(x = numPCs, y = Accur)) +
+  geom_line()
+
+```
+
+```{r}
+### Apply model to prior publication ATAC-seq samples for validation ###
+
+# Read in matrix of counts and filter for subtype specific regions
+validation_counts_ATAC <- read_tsv(file = "/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/Analyses_cohortMod/subtype_class_validation/BALL_BNorm_PhGrouped_Merged_summit_interval_filtered_BALL_Validation_counts.txt", skip = 1, col_names = TRUE) %>% 
+  dplyr::select(-Geneid, -Strand, -Length) %>% 
+  unite(col = "Region", Chr, Start, End, sep = "_", remove = TRUE)
+
+# Transform with VST
+validation_counts_ATAC_VST <- validation_counts_ATAC %>% column_to_rownames(var = "Region") %>% as.matrix() %>% vst() %>% as_tibble(rownames = "Region")
+
+# Prep matrix
+Validation_matrix_forPCA_unknowns <- validation_counts_ATAC_VST %>% 
+  filter(Region %in% Subtype_Specific_SubVSALL_SubtypeCorrection$row) %>% 
+  pivot_longer(cols = where(is.numeric), names_to = "Sample", values_to = "VST_ATAC") %>% 
+  pivot_wider(names_from = "Region", values_from = "VST_ATAC") %>% 
+  column_to_rownames(var = "Sample")
+
+# Get prcomps using training set
+prcomps_unknowns_validation <- predict(Subtype_spec_prcomp, newdata = Validation_matrix_forPCA_unknowns %>% select(where(is.numeric)))
+prcomps_unknowns_validation_df <- prcomps_unknowns_validation[,1:17] %>% as.data.frame()
+
+
+# Apply LDA model built with training set
+LDA_model_predictions_unknowns_validation <- predict(lda_subtype_model, newdata = prcomps_unknowns_validation_df)
+
+Validation_table <- tibble(Truth = rownames(LDA_model_predictions_unknowns_validation$x) %>% str_remove(pattern = "_.*"), Prediction = LDA_model_predictions_unknowns_validation$class)
+# Calculate accuracy of LOOCV 
+mean(Validation_table$Truth == LOOCV$class, na.rm = TRUE)
+
+# Plot training set with scatterplot 
+data_for_LDA_plot_unknowns_validation <- bind_cols(Subtypes = LDA_model_predictions_unknowns_validation$class, LDA_model_predictions_unknowns_validation$x)
+
+data_for_LDA_plot %>% 
+  select(Subtypes, LD1, LD2, LD3, LD4, LD5, LD6, LD7, LD8, LD9) %>% 
+  ggplot(aes(LD1, LD7, label = Subtypes, color = Subtypes)) +
+  geom_point(alpha = 0.75) +
+  geom_point(data = data_for_LDA_plot_unknowns_validation %>% filter(Subtypes == "DUX4"), inherit.aes = FALSE, aes(x = LD1, y = LD7), size = 1.5) +
+  
+  xlab("Discriminant Coordinate 1") +
+  ylab("Discriminant Coordinate 7") +
+  scale_color_manual(values = c(publication_colors$colors, "#000000")) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title = element_text(size = 14), axis.text = element_text(size = 12),
+        axis.ticks = element_line(size = 1), legend.position = "none")
+
+```
+

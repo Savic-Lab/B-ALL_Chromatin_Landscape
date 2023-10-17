@@ -1,0 +1,166 @@
+---
+title: "B Cell Progenitor Analysis"
+author: "Kelly Barnett"
+date: "2023-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+.libPaths("/home/kbarnett/R_4.1")
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(DESeq2)
+library(pheatmap)
+library(BiocParallel)
+library(viridis)
+library(e1071)
+
+set.seed(242)
+```
+
+# Get consensus set of progenitor regions
+
+```{r}
+
+# Read in peaks
+setwd("/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/progenitor_analysis")
+
+progenitor_merged_peaks <- read_tsv(file = "progenitor_peaks_merged.bed", col_names = c("chr", "start", "end")) %>% 
+  mutate(size = end - start)
+
+
+```
+
+```{r}
+setwd("/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/progenitor_analysis")
+Prog_counts <- read_tsv(file = "progenitor_peaks_merged_250bpWindows_counts.txt", col_names = TRUE, skip = 1) %>% unite(col = "Region", Chr, Start, End, sep = "_")
+
+Prog_counts_matrix <- Prog_counts %>% column_to_rownames(var = "Region") %>% select(contains(".bam")) %>% as.matrix() 
+
+```
+
+# Identify progenitor defining regions
+
+```{r}
+Design_data <- tibble(Group = colnames(Prog_counts_matrix)) %>% separate(col = Group, into = c("Group"), sep = "_")
+
+Design_rotations <- 
+  
+Groups_for_rotations <- Design_data %>% distinct(Group) %>% pull()
+
+rotate_subtype_vs_total <- function(Subtype) {
+Design_data %>% mutate(subtype_vs_total = case_when(Group != Subtype ~ "Other_Prog", TRUE ~ Group))
+}
+
+rotations <- map(Groups_for_rotations, rotate_subtype_vs_total)
+names(rotations) <- Groups_for_rotations
+
+one_vs_all_DESeq <- function(Design_rotation) {
+dds_prog_rotations <- DESeqDataSetFromMatrix(countData = Prog_counts_matrix,
+                              colData = Design_rotation,
+                              design = ~ subtype_vs_total)
+dds_prog_rotations$subtype_vs_total <- relevel(dds_prog_rotations$subtype_vs_total, ref = "Other_Prog")
+dds_prog_rotations <- DESeq(dds_prog_rotations, test="Wald", parallel = TRUE, BPPARAM=MulticoreParam(16))
+lfcShrink(dds_prog_rotations, coef = 2, type = "ashr", format = "DataFrame", parallel = TRUE, BPPARAM = MulticoreParam(16)) %>% 
+    as_tibble(rownames = "Region")
+}
+
+Total_one_vs_other <- map_df(.x = rotations[1:7], .f = one_vs_all_DESeq, .id = "Progenitor")
+
+Total_one_vs_other_correctedPvals <- p.adjust(Total_one_vs_other$pvalue, method = "BH")
+
+Total_one_vs_other$padjTotal <- Total_one_vs_other_correctedPvals
+
+Total_one_vs_other_regions <- Total_one_vs_other %>% filter(padjTotal < 0.005, abs(log2FoldChange) >= 1) %>% distinct(Region)
+
+# List origins of regions which showed up in multiple comparisons
+# Majority of regions only originate from a single progenitor
+Total_one_vs_other %>% filter(padjTotal < 0.005, abs(log2FoldChange) >= 1) %>% select(Progenitor, Region, log2FoldChange, padj) %>% 
+  group_by(Region) %>% 
+  summarise(Origin = paste(Progenitor, collapse = ",")) %>% 
+  separate(col = "Region", into = c("chr", "start", "end"), remove = FALSE) %>% 
+  select(chr,start, end, Origin, Region) %>% 
+  write_tsv(file = "/research_jude/rgs01_jude/groups/savicgrp/projects/Drug_GRNs/savicgrp/Kelly/atac_analysis_patients/progenitor_analysis/BProgentior_Defining_ATAC_Regions.bed", col_names = FALSE)
+
+```
+
+# Make heatmap
+
+```{r}
+
+Total_one_vs_other_vst_sig_centered <- vst %>% filter(Region %in% Total_one_vs_other_regions$Region) %>% 
+  rowwise() %>% mutate(rowMean = mean(c_across(contains(".bam")))) %>% ungroup() %>% 
+  mutate(across(contains(".bam"), ~ .x - rowMean)) %>% 
+  select(-rowMean) %>% 
+  rename_with(.fn = ~ gsub("_NODUPS_NOMT.bam", "", .x, fixed = TRUE), .cols = contains(".bam")) %>% 
+  dplyr::select(Region, starts_with("HSC"), starts_with("MPP"), starts_with("LMPP"), starts_with("CLP"), starts_with("Pre"), starts_with("ProB"), starts_with("CD19")) %>% 
+  column_to_rownames(var = "Region")
+
+
+pheatmap(Total_one_vs_other_vst_sig_centered %>% sample_frac(1.0), color = plasma(11), cellwidth = 8, cellheight = NA, cluster_rows=T, cluster_cols=F, scale = "none", show_rownames = FALSE, show_colnames = FALSE,
+         annotation_col = prog_anno_df, annotation_colors = ann_colors, fontsize = 16)
+
+```
+
+# Predict which progenitor B-ALL originate from with K-NN 
+
+```{r}
+# KNN 
+
+Labels <- rownames(vst_prog_ALL_transposed_TRAIN) %>% str_remove(pattern = "_SRR[0-9]+_NODUPS_NOMT.bam") %>% str_remove(pattern = "_[1-3]_NODUPS_NOMT.bam")
+
+# Cross validation set 
+knn.cv(vst_prog_ALL_transposed_TRAIN, cl = Labels, k = 3)
+
+mean(Labels == knn.cv(vst_prog_ALL_transposed_TRAIN, cl = Labels, k = 3))
+
+##run knn function
+library(class)
+library(caret)
+vst_prog_ALL_transposed_knn <- knn(vst_prog_ALL_transposed_TRAIN, vst_prog_ALL_transposed_TEST, k=3, cl = Labels)
+
+Cv_table <- tibble(Truth = Labels, CV = knn.cv(vst_prog_ALL_transposed_TRAIN, cl = Labels, k = 3))
+
+BALL_classifications <- tibble(Sample = rownames(vst_prog_ALL_transposed_TEST), Class = vst_prog_ALL_transposed_knn) %>% mutate(Sample = paste0("X",Sample))
+
+
+# Barplot of B-ALL classfications 
+BALL_classifications %>% 
+  group_by(Class) %>% 
+  summarise(Prop = round((n() / 156 * 100), 0)) %>% 
+  mutate(Species = "Human") %>% 
+  ggplot(aes(x = Species, y = Prop, fill = Class)) +
+  geom_col() +
+  ylab("Percentage") +
+  xlab(NULL) +
+  coord_flip() +
+  theme_bw(base_size = 14)
+
+
+
+
+
+cf_matrix <- confusionMatrix(data = Cv_table$CV, reference = as.factor(Cv_table$Truth))
+
+F1_stats <- cf_matrix$byClass %>% as_tibble(rownames = "CellType") %>% mutate(CellType = str_remove(CellType, pattern = "Class: ")) %>% select(CellType, Sensitivity)
+
+Accuracy_table <- Cv_table %>% mutate(Accuracy = case_when(Truth == CV ~ "Correct", TRUE ~ "Incorrect")) %>%
+  group_by(Truth) %>%
+  summarise(Stat = (sum(Accuracy == "Correct") / n())*100, N = n())
+
+cf_matrix$table %>% as_tibble() %>% 
+  left_join(Accuracy_table, by = c("Prediction" = "Truth")) %>% 
+  mutate(percent = (n/N)*100) %>% 
+  ggplot(aes(x=Prediction, y=Reference, fill=percent)) +
+  geom_tile(color = "white", size = 1) + theme_bw() + coord_equal() +
+  scale_fill_viridis() +
+  geom_text(aes(label=n), color="white", size = 7) +
+  ylab("Cell Type Truth") +
+  xlab("K-NN Cell Type Prediction (Leave One Out Cross Validation)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title = element_text(size = 14), axis.text = element_text(size = 12),
+        axis.ticks = element_line(size = 1), axis.text.x = element_text(angle = 30, vjust = 0.55))
+
+```
+
+
