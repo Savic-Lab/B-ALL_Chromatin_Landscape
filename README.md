@@ -15,23 +15,24 @@ Code and analyses associated with profiling the open chromatin landscape of B-AL
     - tobias v0.12.11
     - deeptools v3.5.0
     - R packages - R_SesssionInfo.txt
-    
-    
-###### ATAC-seq Processing and Regions of Interest Filtering
+
+###### Figure 1
     - ATAC_Processing.txt
     - RegionsOfInterest_Selection_BALL_ATAC.txt
     - Merge_Bams_Call_Peaks_perSubtype.txt
-###### Promoter Capture Hi-C Processing
     - Promoter_CaptureHiC_Arima_BasicProcessing.txt
-###### TOBIAS Footprinting
-    - TOBIAS_Footprinting.Rmd
-
-###### Figure 1
 ###### Figure 2
+    - Fig2.Rmd
 ###### Figure 3
+    - Fig3.Rmd
 ###### Figure 4
+    - Fig4.Rmd
 ###### Figure 5
+    - TOBIAS_Footprinting.Rmd
+    - Fig5.Rmd
 ###### Figure 6
+    - Fig6.Rmd
 ###### Figure 7
+    - Fig7.Rmd
 
 
